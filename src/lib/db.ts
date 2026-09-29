@@ -4,19 +4,27 @@ import path from "path";
 import { randomUUID } from "crypto";
 import initSqlJs, { type Database as SqlJsDatabase } from "sql.js";
 import { defaultsFor, type ProgramType } from "./form-templates";
+import {
+  firestoreEnvPresent,
+  FirestoreStoreError,
+  FirestoreVersionConflict,
+  loadFirestoreSnapshot,
+  readFirestoreMeta,
+  saveFirestoreSnapshot,
+} from "./firestore-store";
 
 const ON_VERCEL = !!(process.env.VERCEL || process.env.VERCEL_ENV);
 const HAS_TURSO = !!(process.env.TURSO_DATABASE_URL && process.env.TURSO_AUTH_TOKEN);
-const HAS_BLOB = !!process.env.BLOB_READ_WRITE_TOKEN;
-const BLOB_DB_PATHNAME = "tms.sqlite";
-const BLOB_META_PATHNAME = "tms.sqlite.meta";
+/** Firestore is used whenever Firebase credentials are present in env (takes priority over everything). */
+const HAS_FIRESTORE = firestoreEnvPresent();
 
 const DATA_DIR = ON_VERCEL ? os.tmpdir() : path.join(process.cwd(), "data");
 const LOCAL_DB_FILE = path.join(DATA_DIR, "tms.sqlite");
 
-export type DbMode = "turso" | "blob-sqlite" | "local-file" | "ephemeral-tmp";
+export type DbMode = "firestore" | "turso" | "local-file" | "ephemeral-tmp";
 
-export type BlobMeta = { version: number; updatedAt: string };
+/** Public, non-secret storage label (reported by /api/health). */
+export type StorageLabel = "firestore" | "turso" | "local-file" | "temporary";
 
 export class VersionConflictError extends Error {
   constructor(
@@ -36,15 +44,20 @@ export class DbPersistError extends Error {
 }
 
 export function getDbMode(): DbMode {
+  if (HAS_FIRESTORE) return "firestore";
   if (HAS_TURSO) return "turso";
-  if (ON_VERCEL && HAS_BLOB) return "blob-sqlite";
   if (ON_VERCEL) return "ephemeral-tmp";
   return "local-file";
 }
 
+export function getStorageLabel(): StorageLabel {
+  const m = getDbMode();
+  return m === "ephemeral-tmp" ? "temporary" : m;
+}
+
 export function isDurableDb(): boolean {
   const m = getDbMode();
-  return m === "turso" || m === "blob-sqlite" || m === "local-file";
+  return m === "firestore" || m === "turso" || m === "local-file";
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -151,117 +164,37 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function readBlobJson<T>(pathname: string): Promise<T | null> {
-  if (!HAS_BLOB) return null;
+async function persistSqlJsToFirestore(db: SqlJsDatabase, expectedVersion: number): Promise<number> {
   try {
-    const { get } = await import("@vercel/blob");
-    const res = await get(pathname, {
-      access: "private",
-      token: process.env.BLOB_READ_WRITE_TOKEN,
-      useCache: false, // Blob CDN defaults to 30d — must bypass for DB consistency
-    });
-    if (!res || res.statusCode !== 200 || !res.stream) return null;
-    const chunks: Buffer[] = [];
-    const stream = res.stream as unknown as AsyncIterable<Uint8Array | Buffer>;
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    if (chunks.length === 0) return null;
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+    const meta = await saveFirestoreSnapshot(db.export(), expectedVersion);
+    return meta.version;
   } catch (e: unknown) {
+    if (e instanceof FirestoreVersionConflict) throw new VersionConflictError(e.expected, e.actual);
     const msg = e instanceof Error ? e.message : String(e);
-    if (!/not found|404|BlobNotFound|JSON/i.test(msg)) {
-      console.warn("[db] blob json read failed:", pathname, msg);
-    }
-    return null;
-  }
-}
-
-async function hydrateFromBlob(): Promise<Uint8Array | null> {
-  if (!HAS_BLOB) return null;
-  try {
-    const { get } = await import("@vercel/blob");
-    const res = await get(BLOB_DB_PATHNAME, {
-      access: "private",
-      token: process.env.BLOB_READ_WRITE_TOKEN,
-      useCache: false, // critical: avoid month-long CDN stale snapshots
-    });
-    if (!res) return null;
-    const status = Number((res as { statusCode?: number }).statusCode ?? 200);
-    if (status === 404) return null;
-    if (status !== 200 || !res.stream) {
-      throw new DbPersistError(`Blob hydrate bad status: ${status}`);
-    }
-    const chunks: Buffer[] = [];
-    const stream = res.stream as unknown as AsyncIterable<Uint8Array | Buffer>;
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    if (chunks.length === 0) return null;
-    return new Uint8Array(Buffer.concat(chunks));
-  } catch (e: unknown) {
-    if (e instanceof DbPersistError) throw e;
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/not found|404|BlobNotFound/i.test(msg)) return null;
-    console.error("[db] blob hydrate failed:", msg);
-    // CRITICAL: do not treat transient errors as empty DB (that re-seeds and wipes data)
-    throw new DbPersistError(`Failed to hydrate database from Blob: ${msg}`, e);
-  }
-}
-
-async function readBlobMeta(): Promise<BlobMeta> {
-  const meta = await readBlobJson<BlobMeta>(BLOB_META_PATHNAME);
-  if (meta && typeof meta.version === "number") return meta;
-  return { version: 0, updatedAt: new Date(0).toISOString() };
-}
-
-async function writeBlobMeta(meta: BlobMeta): Promise<void> {
-  const { put } = await import("@vercel/blob");
-  await put(BLOB_META_PATHNAME, JSON.stringify(meta), {
-    access: "private",
-    token: process.env.BLOB_READ_WRITE_TOKEN,
-    addRandomSuffix: false,
-    allowOverwrite: true,
-    contentType: "application/json",
-    cacheControlMaxAge: 60, // minimum allowed; reads still use useCache:false
-  });
-}
-
-
-
-async function persistSqlJsToBlob(db: SqlJsDatabase, expectedVersion: number): Promise<number> {
-  if (!HAS_BLOB) return expectedVersion;
-  try {
-    const current = await readBlobMeta();
-    if (current.version !== expectedVersion) {
-      throw new VersionConflictError(expectedVersion, current.version);
-    }
-    const { put } = await import("@vercel/blob");
-    const data = db.export();
-    const nextVersion = expectedVersion + 1;
-    const nextMeta: BlobMeta = { version: nextVersion, updatedAt: new Date().toISOString() };
-    // sqlite first, then meta version publish
-    await put(BLOB_DB_PATHNAME, Buffer.from(data), {
-      access: "private",
-      token: process.env.BLOB_READ_WRITE_TOKEN,
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: "application/x-sqlite3",
-      cacheControlMaxAge: 60,
-    });
-    // Re-check before publishing version (best-effort CAS without a true atomic compare)
-    const mid = await readBlobMeta();
-    if (mid.version !== expectedVersion) {
-      throw new VersionConflictError(expectedVersion, mid.version);
-    }
-    await writeBlobMeta(nextMeta);
-    return nextVersion;
-  } catch (e: unknown) {
-    if (e instanceof VersionConflictError || e instanceof DbPersistError) throw e;
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error("[db] blob persist failed:", msg);
+    console.error("[db] firestore persist failed:", msg);
     throw new DbPersistError(`Failed to persist database: ${msg}`, e);
   }
+}
+
+/** sql.js WASM module is loaded once per instance. */
+let sqlModulePromise: ReturnType<typeof initSqlJs> | null = null;
+function loadSqlJs(): ReturnType<typeof initSqlJs> {
+  if (!sqlModulePromise) {
+    const bundled = path.join(process.cwd(), "src", "lib", "assets", "sql-wasm.wasm");
+    const nm = path.join(process.cwd(), "node_modules", "sql.js", "dist", "sql-wasm.wasm");
+    const wasmPath = fs.existsSync(bundled) ? bundled : nm;
+    const wasmBinary = fs.readFileSync(wasmPath);
+    sqlModulePromise = initSqlJs({
+      wasmBinary: wasmBinary.buffer.slice(
+        wasmBinary.byteOffset,
+        wasmBinary.byteOffset + wasmBinary.byteLength
+      ),
+    });
+    sqlModulePromise.catch(() => {
+      sqlModulePromise = null;
+    });
+  }
+  return sqlModulePromise;
 }
 
 function persistSqlJsToFile(db: SqlJsDatabase): void {
@@ -284,39 +217,48 @@ function rowsFromSqlJs(db: SqlJsDatabase, sql: string, params: Param[]): { rows:
   }
 }
 
-async function initSqlJsDb(bootDepth = 0): Promise<TmsDb> {
-  const bundled = path.join(process.cwd(), "src", "lib", "assets", "sql-wasm.wasm");
-  const nm = path.join(process.cwd(), "node_modules", "sql.js", "dist", "sql-wasm.wasm");
-  const wasmPath = fs.existsSync(bundled) ? bundled : nm;
-  const wasmBinary = fs.readFileSync(wasmPath);
-  const SQL = await initSqlJs({
-    wasmBinary: wasmBinary.buffer.slice(
-      wasmBinary.byteOffset,
-      wasmBinary.byteOffset + wasmBinary.byteLength
-    ),
-  });
+/**
+ * @param opts.fresh  build a brand-new (seeded) database instead of loading the stored one
+ *                    (used by the admin "re-seed" action; in Firestore mode it is published as the
+ *                    next version through the normal version check, nothing is deleted first).
+ */
+async function initSqlJsDb(bootDepth = 0, opts: { fresh?: boolean } = {}): Promise<TmsDb> {
+  const SQL = await loadSqlJs();
 
   let bytes: Uint8Array | null = null;
   const mode = getDbMode();
-  let blobVersion = 0;
-  if (mode === "blob-sqlite") {
-    const meta = await readBlobMeta();
-    blobVersion = meta.version;
-    bytes = await hydrateFromBlob();
-    if (!bytes && blobVersion > 0) {
+  let remoteVersion = 0;
+  if (mode === "firestore") {
+    try {
+      if (opts.fresh) {
+        remoteVersion = (await readFirestoreMeta())?.version ?? 0;
+      } else {
+        const snap = await loadFirestoreSnapshot();
+        if (snap) {
+          remoteVersion = snap.meta.version;
+          bytes = snap.bytes;
+        }
+      }
+    } catch (e: unknown) {
+      // CRITICAL: never treat a failed read as an empty DB (that would re-seed and wipe data)
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[db] firestore load failed:", msg);
       throw new DbPersistError(
-        `Blob meta version is ${blobVersion} but tms.sqlite is missing; refusing to re-seed and wipe`
+        e instanceof FirestoreStoreError ? msg : `Failed to load database from Firestore: ${msg}`,
+        e
       );
     }
+  } else if (opts.fresh) {
+    bytes = null;
   } else if (mode === "local-file" && fs.existsSync(LOCAL_DB_FILE)) {
     bytes = new Uint8Array(fs.readFileSync(LOCAL_DB_FILE));
   } else if (mode === "ephemeral-tmp" && fs.existsSync(LOCAL_DB_FILE)) {
     bytes = new Uint8Array(fs.readFileSync(LOCAL_DB_FILE));
   }
 
-  // Per-handle Database instance (do NOT share module sqlJsDb across concurrent blob hydrates)
+  // Per-handle Database instance (do NOT share module sqlJsDb across concurrent remote hydrates)
   const localDb: SqlJsDatabase = bytes ? new SQL.Database(bytes) : new SQL.Database();
-  if (mode !== "blob-sqlite") {
+  if (mode !== "firestore") {
     if (sqlJsDb) {
       try {
         sqlJsDb.close();
@@ -332,8 +274,8 @@ async function initSqlJsDb(bootDepth = 0): Promise<TmsDb> {
     /* ignore */
   }
 
-  let hydratedVersion = blobVersion;
-  /** Suppress persist during migrate/seed so read-only getDb() does not bump blob version. */
+  let hydratedVersion = remoteVersion;
+  /** Suppress persist during migrate/seed so read-only getDb() does not bump the stored version. */
   let persistEnabled = false;
 
   const runQuery = (sql: string, params: Param[]) => rowsFromSqlJs(localDb, sql, params);
@@ -342,9 +284,8 @@ async function initSqlJsDb(bootDepth = 0): Promise<TmsDb> {
   };
   const persist = async () => {
     if (!persistEnabled) return;
-    if (mode === "blob-sqlite") {
-      persistSqlJsToFile(localDb); // also keep /tmp copy
-      hydratedVersion = await persistSqlJsToBlob(localDb, hydratedVersion);
+    if (mode === "firestore") {
+      hydratedVersion = await persistSqlJsToFirestore(localDb, hydratedVersion);
     } else if (mode === "local-file" || mode === "ephemeral-tmp") {
       persistSqlJsToFile(localDb);
     }
@@ -366,19 +307,18 @@ async function initSqlJsDb(bootDepth = 0): Promise<TmsDb> {
   // NEVER persist on steady-state reads — only first boot / real schema seed changes.
   // Byte-compare is unsafe: it can re-upload a stale snapshot and undo a clear/create.
   if (seeded || isNewDb || migrated) {
-    if (mode === "blob-sqlite") {
+    if (mode === "firestore") {
       try {
-        persistSqlJsToFile(localDb);
-        hydratedVersion = await persistSqlJsToBlob(localDb, hydratedVersion);
+        hydratedVersion = await persistSqlJsToFirestore(localDb, hydratedVersion);
       } catch (e) {
-        if (e instanceof VersionConflictError && bootDepth < 2) {
+        if (e instanceof VersionConflictError && bootDepth < 2 && !opts.fresh) {
           try {
             localDb.close();
           } catch {
             /* ignore */
           }
           // Another instance won the bootstrap write — load their snapshot
-          return initSqlJsDb(bootDepth + 1);
+          return initSqlJsDb(bootDepth + 1, opts);
         }
         throw e;
       }
@@ -451,18 +391,18 @@ async function initTursoDb(): Promise<TmsDb> {
 }
 
 async function initDb(): Promise<TmsDb> {
-  if (HAS_TURSO) return initTursoDb();
+  if (getDbMode() === "turso") return initTursoDb();
   return initSqlJsDb();
 }
 
 /**
  * Shared DB handle.
  * - Turso / local-file: cached for process lifetime.
- * - blob-sqlite on Vercel: ALWAYS re-hydrate from Blob (no stale per-instance cache).
+ * - firestore: ALWAYS re-check the stored version (1 doc read; chunk bytes are cached per
+ *   instance and only re-downloaded when the version changed) — multi-instance consistency.
  */
 export async function getDb(): Promise<TmsDb> {
-  if (getDbMode() === "blob-sqlite") {
-    // Fresh snapshot every call — critical for multi-instance consistency
+  if (getDbMode() === "firestore") {
     return initSqlJsDb();
   }
   if (!dbPromise) dbPromise = initDb();
@@ -482,8 +422,8 @@ export async function withDbMutation<T>(
     let lastErr: unknown;
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
-        // Always start from latest blob bytes for blob-sqlite
-        if (getDbMode() === "blob-sqlite") {
+        // Always start from the latest stored snapshot in firestore mode
+        if (getDbMode() === "firestore") {
           dbPromise = null;
           if (sqlJsDb) {
             try {
@@ -1027,7 +967,7 @@ export type ActivityInput = {
 
 /**
  * Append an activity row. Runs inside a transaction so it costs at most ONE whole-file
- * Blob write when called standalone, and nothing extra when the caller is already in a transaction.
+ * Firestore save when called standalone, and nothing extra when the caller is already in a transaction.
  * Also refreshes the actor's visit last_seen for today (no page-view increment).
  */
 export async function logActivity(db: TmsDb, opts: ActivityInput) {
@@ -1141,21 +1081,9 @@ export async function resetDb() {
   for (const f of [LOCAL_DB_FILE, LOCAL_DB_FILE + "-wal", LOCAL_DB_FILE + "-shm"]) {
     if (fs.existsSync(f)) fs.unlinkSync(f);
   }
-  if (HAS_BLOB) {
-    try {
-      const { del, list } = await import("@vercel/blob");
-      for (const prefix of [BLOB_DB_PATHNAME, BLOB_META_PATHNAME, "tms.sqlite.lock"]) {
-        const listed = await list({
-          prefix,
-          token: process.env.BLOB_READ_WRITE_TOKEN,
-        });
-        for (const b of listed.blobs) {
-          await del(b.url, { token: process.env.BLOB_READ_WRITE_TOKEN });
-        }
-      }
-    } catch (e) {
-      console.warn("[db] blob reset failed", e);
-    }
+  if (getDbMode() === "firestore") {
+    // Publish a freshly seeded DB as the next version (version-checked; retried on conflict).
+    return withDbMutation(() => initSqlJsDb(0, { fresh: true }));
   }
   return getDb();
 }

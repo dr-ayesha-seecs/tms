@@ -2,7 +2,7 @@
 
 ## Stack
 - **Next.js 14** App Router + TypeScript + Tailwind CSS
-- **SQLite** via `better-sqlite3` (file: `data/tms.sqlite`)
+- **SQLite** via `sql.js` (in memory), persisted to **Firebase Firestore** (`src/lib/firestore-store.ts`); local file `data/tms.sqlite` when Firebase is not configured
 - Cookie session (`tms_session` = user id) for demo role login — no external auth
 
 ## Data model
@@ -55,7 +55,8 @@ Role sidebar shell; project hub tabs: Overview | Progress | Meetings | Defences 
 E-sign modal: typed name or canvas stroke → persisted signature row with badges.
 
 ## Persistence notes
-DB auto-migrates and auto-seeds when `users` is empty. Re-seed: `POST /api/seed` as admin, or delete `data/tms.sqlite*`.
+DB auto-migrates and auto-seeds when `users` is empty. Re-seed: `POST /api/seed` as admin (in Firestore mode this publishes a freshly seeded DB as the next version), or delete `data/tms.sqlite*` locally.
+Firestore layout and concurrency: see README → Database.
 
 
 ## Program tracks & form templates

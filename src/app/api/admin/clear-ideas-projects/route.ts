@@ -17,7 +17,7 @@ export async function POST() {
   if (user.role !== "admin") return jsonError("Admin only", 403);
 
   try {
-    // Up to 3 full clear+verify cycles for blob races
+    // Up to 3 full clear+verify cycles for multi-instance write races
     let counts = { ideas: -1, projects: -1, users: 0, templates: 0 };
     for (let attempt = 0; attempt < 3; attempt++) {
       await withDbMutation(async (db) => {

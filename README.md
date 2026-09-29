@@ -9,16 +9,38 @@ Thesis workflow demo for **MNS University of Agriculture, Multan**: research ide
 
 ## Production
 
-- **Vercel project:** `mnsuam-thesis-tms`
-- **Production URL:** https://mnsuam-thesis-tms.vercel.app
+- **Production URL:** https://projecttms.vercel.app (Vercel, auto-deploys from GitHub `dr-ayesha-seecs/tms` `main`)
 
-### Database (durable on Vercel)
+### Database (Firebase Firestore)
 
-- **Local/dev:** libSQL file at `data/tms.sqlite`.
-- **Production (preferred):** set `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` for Turso/libSQL.
-- **Production (fallback):** Vercel Blob-backed SQLite (`BLOB_READ_WRITE_TOKEN`) — the DB file is hydrated from / persisted to Blob so ideas survive across serverless instances.
+Nothing is stored in Vercel. The app's SQLite database (sql.js, in memory) is persisted to
+**Firebase Firestore** (`src/lib/firestore-store.ts`):
+
+- Collection `tms_db` (override with `TMS_FIRESTORE_COLLECTION`, must start with `tms_`):
+  `tms_db/meta` = `{ version, updatedAt, snapshotId, chunkCount, size, sha256 }`, plus chunk docs
+  `v{version}_{snapshotId}_c{n}` holding the SQLite bytes (< 1 MiB each).
+- Each save uploads new chunk docs, then publishes them by updating `meta` in a Firestore
+  transaction that checks the version (optimistic concurrency, retried by `withDbMutation`).
+  Old chunk docs are deleted after a successful publish. Reads verify size + sha256.
+- Only `tms_*` collections are used — the Firebase project may be shared with other apps.
+
+Environment variables (Vercel → Project → Settings → Environment Variables):
+
+| Name | Value |
+| --- | --- |
+| `FIREBASE_SERVICE_ACCOUNT_BASE64` | base64 of the whole Firebase service-account JSON (`base64 -w0 sa.json`) |
+| `SESSION_SECRET` | long random string used to sign login cookies |
+
+Alternative to the base64 variable: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`,
+`FIREBASE_PRIVATE_KEY` (the key may contain literal `\n`). Never commit credentials.
+
+Check the deployment: `GET /api/health` → `{"ok":true,"storage":"firestore",...}`
+(`?deep=1` also checks Firestore is reachable). `storage: "temporary"` means Firebase is not
+configured and changes will be lost.
+
+- **Local/dev without Firebase env:** SQLite file at `data/tms.sqlite`.
 - Seeded users use **fixed UUIDs** so sessions stay stable across redeploys.
-- API routes use `export const runtime = 'nodejs'`.
+- API routes use `export const runtime = 'nodejs'` (firebase-admin needs Node, not Edge).
 
 Ideas are labeled **Undergraduate** (`program_type=FYP`) or **Postgraduate** (`program_type=MS_THESIS`).
 
@@ -121,7 +143,7 @@ Admin → Departments (`/admin/departments`): add, rename, delete (delete blocke
 
 ## Document vault (Google Docs links)
 
-Students no longer upload files. **Project → Documents → Submit document link**: choose type (synopsis, proposal, thesis draft, final thesis, …), title, and an `https://docs.google.com/…` or `https://drive.google.com/…` link. The form lists every GEC member's name and email to share with (Editor access), and a required checkbox confirms sharing. The server rejects non-Google URLs, a missing checkbox, and any file payload. Older records still display. Nothing new is written to Blob storage beyond the `tms.sqlite` database.
+Students no longer upload files. **Project → Documents → Submit document link**: choose type (synopsis, proposal, thesis draft, final thesis, …), title, and an `https://docs.google.com/…` or `https://drive.google.com/…` link. The form lists every GEC member's name and email to share with (Editor access), and a required checkbox confirms sharing. The server rejects non-Google URLs, a missing checkbox, and any file payload. Older records still display. No files are stored by the app — only the database (in Firestore).
 
 ## Notifications (in-app, no email)
 

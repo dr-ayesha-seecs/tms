@@ -11,7 +11,7 @@ import {
 /**
  * Visit tracking with write throttling.
  *
- * Every DB write re-uploads the whole SQLite file to Vercel Blob, so page views are NOT written
+ * Every DB write re-uploads the whole SQLite snapshot to Firestore, so page views are NOT written
  * one by one. Instead a short-lived signed httpOnly cookie `tms_seen` carries
  *   { u: userId, d: PKT date, f: last flush time (ms), p: page views not yet written }.
  * A page view only writes when it is the user's first view of the (PKT) day, or when the last
@@ -182,7 +182,7 @@ export async function recordLogout(userId: string, rawSeen: string | undefined |
   }
 }
 
-/** Soft cap so a brute-force burst cannot turn into hundreds of whole-file Blob writes. */
+/** Soft cap so a brute-force burst cannot turn into hundreds of whole-snapshot Firestore writes. */
 const FAILED_LOGIN_CAP_PER_10_MIN = 30;
 
 /** Failed login: stores the (lower-cased) email and time only — never the password. Never throws. */
