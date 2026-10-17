@@ -24,7 +24,9 @@ projects
   status (... pipeline statuses ...), progress_pct, acb_approved
 
 gec_members
-  id, project_id, user_id, gec_role (supervisor|co_supervisor|internal_examiner|external_examiner),
+  id, project_id, user_id, gec_role
+  (undergraduate: supervisor|co_supervisor|internal_examiner|external_examiner;
+   postgraduate: supervisor|member|special_member),
   invited_at, accepted_at
 
 meetings — weekly logs (agenda, attendance JSON, notes, next_actions)

@@ -32,7 +32,9 @@ export type GecRole =
   | "supervisor"
   | "co_supervisor"
   | "internal_examiner"
-  | "external_examiner";
+  | "external_examiner"
+  | "member"
+  | "special_member";
 
 export type ProgramType = "FYP" | "MS_THESIS";
 

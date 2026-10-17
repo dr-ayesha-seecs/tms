@@ -10,6 +10,7 @@ import {
 } from "@/lib/db";
 import { setProjectStudents } from "@/lib/api-helpers";
 import { countFilledPlaces, recomputeSlotsFilled } from "@/lib/idea-capacity";
+import { validateGecInvites } from "@/lib/gec-roles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -140,6 +141,15 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
   if (action !== "accept") return jsonError("Invalid action");
 
+  const normalizedInvites = (gec_invites || [])
+    .filter((inv) => inv && String(inv.user_id || "").trim())
+    .map((inv) => ({
+      user_id: String(inv.user_id).trim(),
+      gec_role: String(inv.gec_role || "").trim(),
+    }));
+  const inviteError = validateGecInvites(interest.program_type, normalizedInvites);
+  if (inviteError) return jsonError(inviteError, 400);
+
   let groupIds = Array.isArray(student_ids) ? student_ids.filter(Boolean) : [interest.student_id];
   if (!groupIds.includes(interest.student_id)) groupIds = [interest.student_id, ...groupIds];
   groupIds = Array.from(new Set(groupIds));
@@ -223,7 +233,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
           )
           .run(randomUUID(), pid, interest.faculty_id, t, t);
 
-        for (const inv of gec_invites || []) {
+        for (const inv of normalizedInvites) {
           if (inv.user_id === interest.faculty_id) continue;
           await mdb
             .prepare(

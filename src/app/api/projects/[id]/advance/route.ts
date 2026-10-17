@@ -1,6 +1,7 @@
 import { getSessionUser, jsonError } from "@/lib/auth";
 import { getDb, logActivity, now } from "@/lib/db";
 import { getProject, th1Complete, listGec } from "@/lib/api-helpers";
+import { gecFinalizeError } from "@/lib/gec-roles";
 
 export const runtime = 'nodejs';
 export const dynamic = "force-dynamic";
@@ -24,10 +25,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   const gec = await listGec(params.id) as { accepted_at: string | null; gec_role: string }[];
 
   if (action === "finalize_gec") {
-    const roles = new Set(gec.map((g) => g.gec_role));
-    if (!roles.has("supervisor") || !roles.has("internal_examiner") || !roles.has("external_examiner")) {
-      return jsonError("GEC needs supervisor, internal examiner, and external examiner");
-    }
+    const shapeError = gecFinalizeError(project.program_type, gec);
+    if (shapeError) return jsonError(shapeError);
     const pending = gec.filter((g) => !g.accepted_at);
     await db.transaction(async () => {
     if (pending.length) {
