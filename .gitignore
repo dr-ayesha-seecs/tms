@@ -36,6 +36,7 @@ data/
 *-shm
 *.dump
 *.bak
+tms-export*
 snapshots/
 db-snapshots/
 backups/
