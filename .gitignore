@@ -17,6 +17,7 @@ next-env.d.ts
 # env files / secrets
 .env
 .env*
+!.env.example
 *.pem
 *.key
 *.p12

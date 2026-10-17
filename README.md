@@ -7,13 +7,28 @@ Thesis workflow demo for **MNS University of Agriculture, Multan**: research ide
 
 **Path (workspace):** `/workspace/thesis-tms`
 
-## Production
+## Production (Netlify)
 
-- **Production URL:** https://projecttms.vercel.app (Vercel, auto-deploys from GitHub `dr-ayesha-seecs/tms` `main`)
+Deploy from GitHub `dr-ayesha-seecs/tms`, branch `main`. `netlify.toml` sets the Next.js build (`npm run build`, Node 24) and the Next.js Runtime plugin. Netlify publishes the adapter output; the `publish` directory in that file is the `.next` folder the build writes.
+
+There is no OAuth and no callback URL. Login is an httpOnly cookie on whatever domain the site uses. Nothing in the app is hard-coded to a host name, so a new Netlify domain does not need an allow-list change.
+
+### Environment variables
+
+See `.env.example` for every name. In production set at least:
+
+- `SESSION_SECRET` — long random string (secret). Signs the session cookie.
+- `FIREBASE_SERVICE_ACCOUNT_BASE64` — base64 of the Firebase service-account JSON (secret). This is the live database.
+
+Optional: `TMS_FIRESTORE_COLLECTION` (default `tms_db`; keep the existing name so the current data is reused), or `FIREBASE_PROJECT_ID` + `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY` instead of the base64 blob. `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are an optional alternative and are ignored when Firebase credentials are present.
+
+Do not set `NODE_ENV` in the Netlify UI. Node 24 comes from `netlify.toml`.
+
+After the first deploy, `GET /api/health` should return `{"ok":true,"storage":"firestore",...}`. `?deep=1` also checks that Firestore is reachable. `storage: "temporary"` means Firebase is not configured; Netlify cannot keep a SQLite file, so changes would be lost.
 
 ### Database (Firebase Firestore)
 
-Nothing is stored in Vercel. The app's SQLite database (sql.js, in memory) is persisted to
+Nothing is stored on the Netlify disk. The app's SQLite database (sql.js, in memory) is persisted to
 **Firebase Firestore** (`src/lib/firestore-store.ts`):
 
 - Collection `tms_db` (override with `TMS_FIRESTORE_COLLECTION`, must start with `tms_`):
@@ -24,7 +39,7 @@ Nothing is stored in Vercel. The app's SQLite database (sql.js, in memory) is pe
   Old chunk docs are deleted after a successful publish. Reads verify size + sha256.
 - Only `tms_*` collections are used — the Firebase project may be shared with other apps.
 
-Environment variables (Vercel → Project → Settings → Environment Variables):
+Environment variables (Netlify → Site configuration → Environment variables):
 
 | Name | Value |
 | --- | --- |

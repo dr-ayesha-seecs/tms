@@ -7,6 +7,7 @@ import {
   withDbMutation,
   type TmsDb,
 } from "./db";
+import { cookieSecureAttribute } from "./runtime";
 
 /**
  * Visit tracking with write throttling.
@@ -56,7 +57,7 @@ export function decodeSeen(raw: string | undefined | null): Seen | null {
 }
 
 function secureAttr(): string {
-  return process.env.VERCEL || process.env.NODE_ENV === "production" ? "; Secure" : "";
+  return cookieSecureAttribute();
 }
 
 export function seenCookieHeader(s: Seen): string {

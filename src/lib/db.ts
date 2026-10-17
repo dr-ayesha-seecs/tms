@@ -12,14 +12,24 @@ import {
   readFirestoreMeta,
   saveFirestoreSnapshot,
 } from "./firestore-store";
+import { isReadOnlyServerlessFs } from "./runtime";
 
-const ON_VERCEL = !!(process.env.VERCEL || process.env.VERCEL_ENV);
 const HAS_TURSO = !!(process.env.TURSO_DATABASE_URL && process.env.TURSO_AUTH_TOKEN);
 /** Firestore is used whenever Firebase credentials are present in env (takes priority over everything). */
 const HAS_FIRESTORE = firestoreEnvPresent();
 
-const DATA_DIR = ON_VERCEL ? os.tmpdir() : path.join(process.cwd(), "data");
-const LOCAL_DB_FILE = path.join(DATA_DIR, "tms.sqlite");
+/**
+ * Where a non-Firestore SQLite file may live.
+ * Netlify and Vercel functions cannot write the deploy directory. /tmp is writable but
+ * wiped between instances, so it is not the production store — Firestore is.
+ */
+function sqliteDir(): string {
+  return isReadOnlyServerlessFs() ? os.tmpdir() : path.join(process.cwd(), "data");
+}
+
+function sqlitePath(): string {
+  return path.join(sqliteDir(), "tms.sqlite");
+}
 
 export type DbMode = "firestore" | "turso" | "local-file" | "ephemeral-tmp";
 
@@ -46,7 +56,7 @@ export class DbPersistError extends Error {
 export function getDbMode(): DbMode {
   if (HAS_FIRESTORE) return "firestore";
   if (HAS_TURSO) return "turso";
-  if (ON_VERCEL) return "ephemeral-tmp";
+  if (isReadOnlyServerlessFs()) return "ephemeral-tmp";
   return "local-file";
 }
 
@@ -66,7 +76,8 @@ type Row = Record<string, any>;
 type Param = any;
 
 function ensureDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  const dir = sqliteDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 export class Stmt {
@@ -178,18 +189,39 @@ async function persistSqlJsToFirestore(db: SqlJsDatabase, expectedVersion: numbe
 
 /** sql.js WASM module is loaded once per instance. */
 let sqlModulePromise: ReturnType<typeof initSqlJs> | null = null;
+function sqlWasmCandidates(): string[] {
+  const roots = [process.cwd(), process.env.LAMBDA_TASK_ROOT, __dirname].filter(
+    (p): p is string => Boolean(p)
+  );
+  const rels = [
+    path.join("src", "lib", "assets", "sql-wasm.wasm"),
+    path.join("node_modules", "sql.js", "dist", "sql-wasm.wasm"),
+    path.join("assets", "sql-wasm.wasm"),
+  ];
+  const out: string[] = [];
+  for (const root of roots) {
+    for (const rel of rels) out.push(path.join(root, rel));
+  }
+  return out;
+}
+
+function readSqlWasm(): Buffer {
+  for (const candidate of sqlWasmCandidates()) {
+    if (fs.existsSync(candidate)) return fs.readFileSync(candidate);
+  }
+  throw new Error(
+    `sql.js WASM was not found. Checked: ${sqlWasmCandidates().join(", ")}`
+  );
+}
+
 function loadSqlJs(): ReturnType<typeof initSqlJs> {
   if (!sqlModulePromise) {
-    const bundled = path.join(process.cwd(), "src", "lib", "assets", "sql-wasm.wasm");
-    const nm = path.join(process.cwd(), "node_modules", "sql.js", "dist", "sql-wasm.wasm");
-    const wasmPath = fs.existsSync(bundled) ? bundled : nm;
-    const wasmBinary = fs.readFileSync(wasmPath);
-    sqlModulePromise = initSqlJs({
-      wasmBinary: wasmBinary.buffer.slice(
-        wasmBinary.byteOffset,
-        wasmBinary.byteOffset + wasmBinary.byteLength
-      ),
-    });
+    const wasmBinary = readSqlWasm();
+    const wasmBuffer = wasmBinary.buffer.slice(
+      wasmBinary.byteOffset,
+      wasmBinary.byteOffset + wasmBinary.byteLength
+    ) as ArrayBuffer;
+    sqlModulePromise = initSqlJs({ wasmBinary: wasmBuffer });
     sqlModulePromise.catch(() => {
       sqlModulePromise = null;
     });
@@ -199,7 +231,7 @@ function loadSqlJs(): ReturnType<typeof initSqlJs> {
 
 function persistSqlJsToFile(db: SqlJsDatabase): void {
   ensureDir();
-  fs.writeFileSync(LOCAL_DB_FILE, Buffer.from(db.export()));
+  fs.writeFileSync(sqlitePath(), Buffer.from(db.export()));
 }
 
 function rowsFromSqlJs(db: SqlJsDatabase, sql: string, params: Param[]): { rows: Row[]; changes: number } {
@@ -250,10 +282,10 @@ async function initSqlJsDb(bootDepth = 0, opts: { fresh?: boolean } = {}): Promi
     }
   } else if (opts.fresh) {
     bytes = null;
-  } else if (mode === "local-file" && fs.existsSync(LOCAL_DB_FILE)) {
-    bytes = new Uint8Array(fs.readFileSync(LOCAL_DB_FILE));
-  } else if (mode === "ephemeral-tmp" && fs.existsSync(LOCAL_DB_FILE)) {
-    bytes = new Uint8Array(fs.readFileSync(LOCAL_DB_FILE));
+  } else if (mode === "local-file" && fs.existsSync(sqlitePath())) {
+    bytes = new Uint8Array(fs.readFileSync(sqlitePath()));
+  } else if (mode === "ephemeral-tmp" && fs.existsSync(sqlitePath())) {
+    bytes = new Uint8Array(fs.readFileSync(sqlitePath()));
   }
 
   // Per-handle Database instance (do NOT share module sqlJsDb across concurrent remote hydrates)
@@ -1078,7 +1110,8 @@ export async function resetDb() {
     }
     tursoClient = null;
   }
-  for (const f of [LOCAL_DB_FILE, LOCAL_DB_FILE + "-wal", LOCAL_DB_FILE + "-shm"]) {
+  const dbFile = sqlitePath();
+  for (const f of [dbFile, dbFile + "-wal", dbFile + "-shm"]) {
     if (fs.existsSync(f)) fs.unlinkSync(f);
   }
   if (getDbMode() === "firestore") {
@@ -1088,4 +1121,4 @@ export async function resetDb() {
   return getDb();
 }
 
-export { LOCAL_DB_FILE as DB_PATH, now };
+export { now };

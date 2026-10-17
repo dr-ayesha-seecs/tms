@@ -1,0 +1,21 @@
+# Next.js 14 on Netlify.
+# The Next.js Runtime (@netlify/plugin-nextjs / OpenNext) is installed at build
+# time from this file and is not pinned in package.json, so Netlify can update it.
+# It turns `next build` output into static files plus serverless functions.
+# Do not set NODE_ENV=production here: that makes npm skip devDependencies
+# (TypeScript) and the build fails.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "24"
+
+# Route handlers and server pages run as Netlify Functions. A cold start that
+# downloads the Firestore SQLite snapshot can exceed the 10s default.
+[functions]
+  timeout = 26
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
