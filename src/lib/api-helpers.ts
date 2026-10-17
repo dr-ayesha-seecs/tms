@@ -1,6 +1,8 @@
 import { getDb, logActivity, formDisplayName, type TmsDb } from "./db";
-import type { FormType, GecRole, Project, ProgramType } from "./types";
+import type { FormType, Project, ProgramType } from "./types";
 import { FORM_CODES } from "./form-templates";
+
+export { roleLabelForGec } from "./gec-roles";
 import { countFilledPlaces, recomputeSlotsFilled } from "./idea-capacity";
 
 export async function getProject(id: string): Promise<Project | undefined> {
@@ -26,9 +28,11 @@ export async function listGec(projectId: string) {
          CASE g.gec_role
            WHEN 'supervisor' THEN 1
            WHEN 'co_supervisor' THEN 2
+           WHEN 'member' THEN 2
            WHEN 'internal_examiner' THEN 3
-           WHEN 'external_examiner' THEN 4
-           ELSE 5 END`
+           WHEN 'special_member' THEN 4
+           WHEN 'external_examiner' THEN 5
+           ELSE 6 END, u.name`
     )
     .all(projectId);
 }
@@ -77,21 +81,6 @@ export async function getSignatures(targetType: string, targetId: string) {
        ORDER BY s.signed_at`
     )
     .all(targetType, targetId);
-}
-
-export function roleLabelForGec(role: GecRole): string {
-  switch (role) {
-    case "supervisor":
-      return "Supervisor";
-    case "co_supervisor":
-      return "Co-Supervisor";
-    case "internal_examiner":
-      return "Internal Examiner";
-    case "external_examiner":
-      return "External Examiner";
-    default:
-      return role;
-  }
 }
 
 export async function resolveFormLabel(program: ProgramType, code: string): Promise<string> {

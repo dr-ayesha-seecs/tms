@@ -12,6 +12,7 @@ import { SignaturePad } from "./SignaturePad";
 import { SignatureList } from "./SignatureList";
 import { formatDate, formatDateShort } from "@/lib/format";
 import { localInputToPktIso } from "@/lib/pkt";
+import { assignableGecRoles, isPostgraduateProgram, roleLabelForGec } from "@/lib/gec-roles";
 
 type DocWithSig = Document & { uploader_name?: string; signatures: (Signature & { user_name?: string })[] };
 type FormWithSig = FormRecord & { display_name?: string; signatures: (Signature & { user_name?: string })[] };
@@ -78,7 +79,7 @@ export function ProjectHub({
 
   const pendingRolesFor = (sigs: (Signature & { user_name?: string })[]) => {
     const signedUsers = new Set(sigs.map((s) => s.user_id));
-    return gec.filter((g) => !signedUsers.has(g.user_id)).map((g) => `${g.user_name} (${g.gec_role.replace(/_/g, " ")})`);
+    return gec.filter((g) => !signedUsers.has(g.user_id)).map((g) => `${g.user_name} (${roleLabelForGec(g.gec_role)})`);
   };
 
   async function api(url: string, method: string, body?: unknown) {
@@ -350,6 +351,7 @@ export function ProjectHub({
           }}
           onSignForm={(id) => setSignTarget({ type: "form", id })}
           onSignDoc={(id) => setSignTarget({ type: "document", id })}
+          programType={project.program_type}
         />
       )}
 
@@ -856,7 +858,7 @@ function DocumentsPanel({
                 <ul className="space-y-0.5">
                   {gec.map((g) => (
                     <li key={g.id}>
-                      {g.user_name} <span className="text-slate-500">({g.gec_role.replace(/_/g, " ")})</span> —{" "}
+                      {g.user_name} <span className="text-slate-500">({roleLabelForGec(g.gec_role)})</span> —{" "}
                       <span className="font-mono select-all">{g.user_email}</span>
                     </li>
                   ))}
@@ -996,7 +998,7 @@ function DocumentsPanel({
 }
 
 function GecPanel({
-  projectId, gec, forms, documents, facultyPool, isSupervisor, isAdmin, user, busy, onInvite, onAccept, onUpdateRole, onDelete, onSignForm, onSignDoc,
+  projectId, gec, forms, documents, facultyPool, isSupervisor, isAdmin, user, busy, onInvite, onAccept, onUpdateRole, onDelete, onSignForm, onSignDoc, programType,
 }: {
   projectId: string;
   gec: GecRow[];
@@ -1013,9 +1015,12 @@ function GecPanel({
   onDelete?: (id: string) => Promise<unknown>;
   onSignForm: (id: string) => void;
   onSignDoc: (id: string) => void;
+  programType?: string;
 }) {
+  const postgraduate = isPostgraduateProgram(programType);
+  const roleOptions = useMemo(() => assignableGecRoles(programType), [programType]);
   const [userId, setUserId] = useState("");
-  const [role, setRole] = useState("internal_examiner");
+  const [role, setRole] = useState(postgraduate ? "member" : "internal_examiner");
   const myMembership = useMemo(() => gec.find((g) => g.user_id === user.id), [gec, user.id]);
 
   return (
@@ -1027,22 +1032,44 @@ function GecPanel({
             <div key={g.id} className="flex flex-wrap justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-sm">
               <div>
                 <div className="font-medium">{g.user_name}</div>
-                <div className="text-xs text-slate-500 capitalize">{g.gec_role.replace(/_/g, " ")} · {g.user_title}</div>
+                <div className="text-xs text-slate-500">{roleLabelForGec(g.gec_role)} · {g.user_title}</div>
               </div>
               <div className="flex items-center gap-2">
                 {g.accepted_at ? <span className="badge-success">Accepted</span> : <span className="badge-warning">Invited</span>}
                 {isSupervisor && onUpdateRole && g.gec_role !== "supervisor" && (
-                  <button
-                    className="btn-secondary text-xs"
-                    disabled={busy}
-                    onClick={() => {
-                      const role = prompt("GEC role (co_supervisor / internal_examiner / external_examiner)", g.gec_role);
-                      if (!role) return;
-                      onUpdateRole({ member_id: g.id, gec_role: role });
-                    }}
-                  >
-                    Edit role
-                  </button>
+                  postgraduate ? (
+                    <select
+                      key={`${g.id}-${g.gec_role}`}
+                      className="input text-xs py-1"
+                      aria-label={`Role for ${g.user_name}`}
+                      defaultValue={g.gec_role}
+                      disabled={busy}
+                      onChange={(e) => {
+                        if (e.target.value && e.target.value !== g.gec_role) {
+                          onUpdateRole({ member_id: g.id, gec_role: e.target.value });
+                        }
+                      }}
+                    >
+                      {!roleOptions.some((opt) => opt.value === g.gec_role) && (
+                        <option value={g.gec_role}>{roleLabelForGec(g.gec_role)}</option>
+                      )}
+                      {roleOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <button
+                      className="btn-secondary text-xs"
+                      disabled={busy}
+                      onClick={() => {
+                        const next = prompt("GEC role (co_supervisor / internal_examiner / external_examiner)", g.gec_role);
+                        if (!next) return;
+                        onUpdateRole({ member_id: g.id, gec_role: next });
+                      }}
+                    >
+                      Edit role
+                    </button>
+                  )
                 )}
                 {isAdmin && onDelete && g.gec_role !== "supervisor" && (
                   <button className="btn-danger text-xs" disabled={busy} onClick={() => onDelete(g.id)}>
@@ -1070,9 +1097,9 @@ function GecPanel({
             <div>
               <label className="label">Role</label>
               <select className="input" value={role} onChange={(e) => setRole(e.target.value)}>
-                <option value="co_supervisor">Co-supervisor</option>
-                <option value="internal_examiner">Internal examiner</option>
-                <option value="external_examiner">External examiner</option>
+                {roleOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
             <button className="btn-primary" disabled={busy || !userId} onClick={() => onInvite({ user_id: userId, gec_role: role })}>Invite</button>

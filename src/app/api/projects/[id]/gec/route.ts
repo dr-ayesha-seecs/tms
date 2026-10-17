@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { getSessionUser, jsonError } from "@/lib/auth";
 import { getDb, logActivity, now } from "@/lib/db";
 import { getProject, listGec, roleLabelForGec } from "@/lib/api-helpers";
+import { gecRoleAssignmentError } from "@/lib/gec-roles";
 import type { GecRole } from "@/lib/types";
 
 async function userName(db: Awaited<ReturnType<typeof getDb>>, id: string): Promise<string> {
@@ -22,6 +23,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   }
   const { user_id, gec_role } = await req.json();
   if (!user_id || !gec_role) return jsonError("user_id and gec_role required");
+  const existing = (await listGec(params.id)) as { id: string; user_id: string; gec_role: string }[];
+  const roleError = gecRoleAssignmentError(project.program_type, gec_role, existing, { userId: user_id });
+  if (roleError) return jsonError(roleError, 400);
   const db = await getDb();
   const t = now();
   const invitee = await userName(db, user_id);
@@ -64,6 +68,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return jsonError("Forbidden", 403);
     }
     if (gec_role === "supervisor") return jsonError("Cannot reassign supervisor role this way", 400);
+    const existing = (await listGec(params.id)) as { id: string; user_id: string; gec_role: string }[];
+    const roleError = gecRoleAssignmentError(project.program_type, gec_role, existing, {
+      replacingMemberId: member_id,
+    });
+    if (roleError) return jsonError(roleError, 400);
     const member = (await db
       .prepare(`SELECT g.gec_role, u.name FROM gec_members g JOIN users u ON u.id = g.user_id WHERE g.id = ? AND g.project_id = ?`)
       .get(member_id, params.id)) as { gec_role: string; name: string } | undefined;

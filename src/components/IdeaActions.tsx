@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { StatusBadge } from "./StatusBadge";
 import { formatDate } from "@/lib/format";
+import { gecInviteSlots, isPostgraduateProgram } from "@/lib/gec-roles";
 
 type Interest = {
   id: string;
@@ -29,6 +30,7 @@ export function IdeaActions({
   interests,
   facultyPool,
   placesLeft = 3,
+  programType = "MS_THESIS",
 }: {
   ideaId: string;
   ideaStatus: string;
@@ -41,6 +43,8 @@ export function IdeaActions({
   facultyPool: PoolUser[];
   /** Places still free on this idea (slots − students already on its projects). */
   placesLeft?: number;
+  /** Idea track: FYP (undergraduate) or MS_THESIS (postgraduate). */
+  programType?: string;
 }) {
   const maxGroup = Math.max(0, Math.min(3, placesLeft));
   const router = useRouter();
@@ -50,10 +54,10 @@ export function IdeaActions({
   const [error, setError] = useState("");
   const [acceptId, setAcceptId] = useState<string | null>(null);
   const [groupIds, setGroupIds] = useState<string[]>([]);
-  const [coSup, setCoSup] = useState("");
-  const [internal, setInternal] = useState("");
-  const [external, setExternal] = useState("");
+  const [gecPicks, setGecPicks] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const postgraduate = isPostgraduateProgram(programType);
+  const gecSlots = useMemo(() => gecInviteSlots(programType), [programType]);
 
   const pending = useMemo(
     () => interests.filter((i) => i.status === "pending"),
@@ -118,13 +122,14 @@ export function IdeaActions({
   async function decide(interestId: string, action: "accept" | "reject") {
     setBusy(true);
     setError("");
-    const gec_invites = [];
+    const gec_invites: { user_id: string; gec_role: string }[] = [];
     const primary = interests.find((i) => i.id === interestId);
     let student_ids: string[] | undefined;
     if (action === "accept") {
-      if (coSup) gec_invites.push({ user_id: coSup, gec_role: "co_supervisor" });
-      if (internal) gec_invites.push({ user_id: internal, gec_role: "internal_examiner" });
-      if (external) gec_invites.push({ user_id: external, gec_role: "external_examiner" });
+      for (const slot of gecSlots) {
+        const userId = gecPicks[slot.key];
+        if (userId) gec_invites.push({ user_id: userId, gec_role: slot.role });
+      }
       const selected = groupIds.length
         ? groupIds
         : primary
@@ -177,6 +182,18 @@ export function IdeaActions({
   function openAccept(interest: Interest) {
     setAcceptId(interest.id);
     setGroupIds([interest.student_id]);
+    setGecPicks({});
+  }
+
+  function optionsForSlot(slotKey: string, facultyOnly?: boolean) {
+    const taken = new Set(
+      gecSlots.filter((slot) => slot.key !== slotKey).map((slot) => gecPicks[slot.key]).filter(Boolean)
+    );
+    return facultyPool.filter((u) => {
+      if (taken.has(u.id)) return false;
+      if (facultyOnly && u.role !== "faculty") return false;
+      return true;
+    });
   }
 
   function toggleGroupMember(studentId: string) {
@@ -304,32 +321,34 @@ export function IdeaActions({
                       </div>
                       <p className="text-xs text-slate-500">{groupIds.length}/{Math.max(1, maxGroup)} selected</p>
                       <p className="text-xs text-slate-600">Invite GEC members (optional now; can add later):</p>
-                      <select className="input" value={coSup} onChange={(e) => setCoSup(e.target.value)}>
-                        <option value="">Co-supervisor…</option>
-                        {facultyPool.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name} ({u.role})
-                          </option>
-                        ))}
-                      </select>
-                      <select className="input" value={internal} onChange={(e) => setInternal(e.target.value)}>
-                        <option value="">Internal examiner…</option>
-                        {facultyPool
-                          .filter((u) => u.role === "faculty")
-                          .map((u) => (
-                            <option key={u.id} value={u.id}>
-                              {u.name}
-                            </option>
-                          ))}
-                      </select>
-                      <select className="input" value={external} onChange={(e) => setExternal(e.target.value)}>
-                        <option value="">External examiner…</option>
-                        {facultyPool.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name} ({u.role})
-                          </option>
-                        ))}
-                      </select>
+                      {postgraduate && (
+                        <p className="text-xs text-slate-500">
+                          A complete committee has two Members. Special Member is optional.
+                        </p>
+                      )}
+                      {gecSlots.map((slot) => (
+                        <label key={slot.key} className="block space-y-1">
+                          {slot.label && (
+                            <span className="text-xs font-medium text-slate-700">{slot.label}</span>
+                          )}
+                          <select
+                            className="input"
+                            aria-label={slot.label || slot.placeholder.replace(/…$/, "")}
+                            value={gecPicks[slot.key] || ""}
+                            onChange={(e) =>
+                              setGecPicks((prev) => ({ ...prev, [slot.key]: e.target.value }))
+                            }
+                          >
+                            <option value="">{slot.placeholder}</option>
+                            {optionsForSlot(slot.key, slot.facultyOnly).map((u) => (
+                              <option key={u.id} value={u.id}>
+                                {u.name}
+                                {slot.facultyOnly ? "" : ` (${u.role})`}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ))}
                       <div className="flex gap-2">
                         <button
                           className="btn-primary text-xs"

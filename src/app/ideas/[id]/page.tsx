@@ -132,6 +132,7 @@ export default async function IdeaDetailPage({ params }: { params: { id: string 
           myInterestStatus={myInterest?.status}
           interests={interests}
           placesLeft={Math.max(0, Number(idea.slots || 1) - Number(idea.places_filled || 0))}
+          programType={idea.program_type}
           facultyPool={facultyPool.map((u) => ({
             id: u.id,
             name: u.name,
