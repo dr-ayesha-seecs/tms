@@ -18,6 +18,26 @@ A folder works the same way:
 npx tsx scripts/import-from-export.ts /path/to/export-folder --out data/tms.sqlite
 ```
 
+A single JSON bundle also works. The object maps each relative path (`users.json`, `ideas/<id>.json`, `activity.csv`, `MANIFEST.md`) to that file's text. The script unpacks it in a temp directory and does not write the export into the repository:
+
+```bash
+npx tsx scripts/import-from-export.ts uploads/tms-export-bundle.json --out data/tms.sqlite
+```
+
+`--sql dump.sql` also writes a `sqlite3 .dump` script next to the database. That file is ordinary SQL (schema and rows). Do not commit it.
+
+## Loading into Turso
+
+Turso is not a blob store. If `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are set, and the Firebase variables are not, the app runs these tables as normal SQL through `@libsql/client`. There is no meta or version table on that path. The version document exists only for the Firestore snapshot.
+
+On first connect, `migrate()` creates any missing table. If `users` is empty it inserts the demo accounts. Load the dump into an empty Turso database before the app connects, or the demo rows will already be there:
+
+```bash
+turso db shell <database-name> < dump.sql
+```
+
+Then set the two Turso variables and leave the Firebase variables unset. The next boot sees the imported users and does not seed.
+
 The script replaces the local development database at `data/tms.sqlite` (that is the file `npm run dev` opens) and copies it to `--out` when that path is different. Restart the dev server after an import. The first boot runs the normal schema migration. It does not re-seed users when the file already has rows.
 
 Re-run the same command on a fresh export immediately before switching hosts, so nothing saved after this snapshot is left behind.

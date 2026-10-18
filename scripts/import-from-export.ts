@@ -4,7 +4,7 @@
  * The export contains student personal data. This script never prints row contents.
  * Do not commit the export folder, the tar.gz, or the .sqlite file it writes.
  *
- *   npx tsx scripts/import-from-export.ts <export-folder-or-tar.gz> --out data/tms.sqlite
+ *   npx tsx scripts/import-from-export.ts <export-folder-or-tar.gz-or-bundle.json> --out data/tms.sqlite
  *
  * Refuses to start when Firebase or Turso credentials are set, so a misconfigured
  * shell cannot publish this file over the live store.
@@ -92,6 +92,30 @@ function walk(dir: string): string[] {
   return out;
 }
 
+function isExportBundle(data: unknown): data is Record<string, string> {
+  if (!isObj(data)) return false;
+  const keys = Object.keys(data);
+  if (!keys.length) return false;
+  const looksLikeFiles = keys.some(
+    (key) => key === "users.json" || key === "MANIFEST.md" || key === "activity.csv" || key.includes("/")
+  );
+  return looksLikeFiles && keys.every((key) => typeof data[key] === "string");
+}
+
+/** Write a path→text bundle into dest. Rejects absolute paths and `..`. */
+function unpackBundle(data: Record<string, string>, dest: string) {
+  for (const rel of Object.keys(data)) {
+    if (!rel || path.isAbsolute(rel) || rel.split(/[/\\]/).includes("..")) {
+      throw new Error("Export bundle contains an unsafe path");
+    }
+  }
+  for (const [rel, text] of Object.entries(data)) {
+    const full = path.join(dest, rel);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, text);
+  }
+}
+
 function findExportRoot(input: string): { root: string; cleanup?: () => void } {
   const abs = path.resolve(input);
   if (!fs.existsSync(abs)) {
@@ -99,10 +123,21 @@ function findExportRoot(input: string): { root: string; cleanup?: () => void } {
   }
   const stat = fs.statSync(abs);
   if (stat.isDirectory()) return { root: abs };
-  if (!/\.(tar\.gz|tgz)$/i.test(abs)) {
-    throw new Error(`Expected a directory or a .tar.gz file, got ${abs}`);
-  }
   const dest = fs.mkdtempSync(path.join(os.tmpdir(), "tms-export-"));
+  const cleanup = () => fs.rmSync(dest, { recursive: true, force: true });
+  if (/\.json$/i.test(abs)) {
+    const parsed = JSON.parse(fs.readFileSync(abs, "utf8")) as unknown;
+    if (!isExportBundle(parsed)) {
+      cleanup();
+      throw new Error(`JSON file is not an export bundle (expected path → text): ${abs}`);
+    }
+    unpackBundle(parsed, dest);
+    return { root: dest, cleanup };
+  }
+  if (!/\.(tar\.gz|tgz)$/i.test(abs)) {
+    cleanup();
+    throw new Error(`Expected a directory, a .tar.gz archive, or a bundle .json file, got ${abs}`);
+  }
   execFileSync("tar", ["-xzf", abs, "-C", dest], { stdio: "pipe" });
   const entries = fs.readdirSync(dest).filter((name) => name !== "." && name !== "..");
   let root = dest;
@@ -110,12 +145,7 @@ function findExportRoot(input: string): { root: string; cleanup?: () => void } {
     const only = path.join(dest, entries[0]);
     if (fs.statSync(only).isDirectory()) root = only;
   }
-  return {
-    root,
-    cleanup: () => {
-      fs.rmSync(dest, { recursive: true, force: true });
-    },
-  };
+  return { root, cleanup };
 }
 
 type Loaded = {
@@ -592,9 +622,16 @@ async function main() {
   const args = process.argv.slice(2);
   const outFlag = args.indexOf("--out");
   const outPath = outFlag >= 0 ? args[outFlag + 1] : "";
-  const input = args.find((a, i) => !a.startsWith("--") && (outFlag < 0 || i !== outFlag + 1));
+  const sqlFlag = args.indexOf("--sql");
+  const sqlPath = sqlFlag >= 0 ? args[sqlFlag + 1] : "";
+  const skip = new Set<number>();
+  if (outFlag >= 0) skip.add(outFlag + 1);
+  if (sqlFlag >= 0) skip.add(sqlFlag + 1);
+  const input = args.find((arg, index) => !arg.startsWith("--") && !skip.has(index));
   if (!input || !outPath) {
-    console.error("usage: npx tsx scripts/import-from-export.ts <export-folder-or-tar.gz> --out <file.sqlite>");
+    console.error(
+      "usage: npx tsx scripts/import-from-export.ts <export-folder-or-tar.gz-or-bundle.json> --out <file.sqlite> [--sql <file.sql>]"
+    );
     process.exit(1);
   }
   if (
@@ -1173,6 +1210,15 @@ async function main() {
     const dest = path.resolve(outPath);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     if (path.resolve(localFile) !== dest) fs.copyFileSync(localFile, dest);
+    if (sqlPath) {
+      const dump = execFileSync("sqlite3", [localFile, ".dump"], {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      const sqlDest = path.resolve(sqlPath);
+      fs.mkdirSync(path.dirname(sqlDest), { recursive: true });
+      fs.writeFileSync(sqlDest, dump);
+    }
 
     const mismatches: string[] = [];
     for (const [key, expected] of Object.entries(loaded.manifest)) {
