@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { cookies } from "next/headers";
 import { getDb } from "./db";
+import { cookieSecureAttribute } from "./runtime";
 import type { User } from "./types";
 
 export const SESSION_COOKIE = "tms_session";
@@ -56,13 +57,11 @@ export function verifySessionToken(token: string | undefined | null): string | n
 }
 
 export function sessionCookieHeader(token: string, maxAgeSec = SESSION_DAYS * 86400): string {
-  const secure = process.env.VERCEL || process.env.NODE_ENV === "production" ? "; Secure" : "";
-  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`;
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${cookieSecureAttribute()}`;
 }
 
 export function clearSessionCookieHeader(): string {
-  const secure = process.env.VERCEL || process.env.NODE_ENV === "production" ? "; Secure" : "";
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${cookieSecureAttribute()}`;
 }
 
 export type PublicUser = Omit<User, "password_hash">;

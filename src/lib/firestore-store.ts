@@ -142,7 +142,7 @@ async function firestore(): Promise<Firestore> {
     const sa = readServiceAccount();
     if (!sa) throw new FirestoreStoreError(credsError || "Firebase credentials are not configured");
     const { initializeApp, getApps, cert } = await import("firebase-admin/app");
-    const { getFirestore } = await import("firebase-admin/firestore");
+    const { getFirestore, initializeFirestore } = await import("firebase-admin/firestore");
     const APP_NAME = "tms";
     const existing = getApps().find((a: App) => a.name === APP_NAME);
     const app =
@@ -154,6 +154,15 @@ async function firestore(): Promise<Firestore> {
         },
         APP_NAME
       );
+    // Netlify Functions are short-lived. The gRPC transport keeps a channel open and
+    // often fails to bundle; REST writes the same snapshot documents.
+    if (process.env.NETLIFY) {
+      try {
+        return initializeFirestore(app, { preferRest: true });
+      } catch {
+        return getFirestore(app);
+      }
+    }
     return getFirestore(app);
   })();
   appPromise.catch(() => {

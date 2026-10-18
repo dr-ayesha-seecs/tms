@@ -2,7 +2,7 @@
 
 ## Stack
 - **Next.js 14** App Router + TypeScript + Tailwind CSS
-- **SQLite** via `sql.js` (in memory), persisted to **Firebase Firestore** (`src/lib/firestore-store.ts`); local file `data/tms.sqlite` when Firebase is not configured
+- **SQLite** via `sql.js` (in memory), persisted to **Firebase Firestore** (`src/lib/firestore-store.ts`); local file `data/tms.sqlite` when Firebase is not configured. On Netlify (and other serverless hosts) the deploy directory is read-only, so without Firebase the file is only written under `/tmp` and is not durable. Netlify uses the Firestore REST transport.
 - Cookie session (`tms_session` = user id) for demo role login — no external auth
 
 ## Data model
