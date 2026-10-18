@@ -36,7 +36,7 @@ On first connect, `migrate()` creates any missing table. If `users` is empty it 
 turso db shell <database-name> < dump.sql
 ```
 
-Then set the two Turso variables and leave the Firebase variables unset. The next boot sees the imported users and does not seed.
+The live Netlify site uses Turso. Set `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and `SESSION_SECRET` there. Leave the Firebase variables unset so Turso stays selected. The next boot sees the imported users and does not seed.
 
 The script replaces the local development database at `data/tms.sqlite` (that is the file `npm run dev` opens) and copies it to `--out` when that path is different. Restart the dev server after an import. The first boot runs the normal schema migration. It does not re-seed users when the file already has rows.
 
