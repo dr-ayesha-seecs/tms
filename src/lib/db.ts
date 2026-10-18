@@ -368,6 +368,19 @@ async function initTursoDb(): Promise<TmsDb> {
     authToken: process.env.TURSO_AUTH_TOKEN!,
   });
   tursoClient = client;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let activeTx: any = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const exec = (stmt: { sql: string; args: never[] }): Promise<any> =>
+    (activeTx ?? client).execute(stmt);
+  const toRow = (columns: string[], r: unknown): Row => {
+    const arr = r as ArrayLike<unknown>;
+    const o: Record<string, unknown> = {};
+    columns.forEach((c, i) => {
+      o[c] = arr[i];
+    });
+    return o as Row;
+  };
 
   const db = new (class extends TmsDb {
     prepare(sql: string): Stmt {
@@ -376,16 +389,16 @@ async function initTursoDb(): Promise<TmsDb> {
           super(() => ({ rows: [], changes: 0 }), sql, async () => undefined);
         }
         async get(...params: Param[]): Promise<Row | undefined> {
-          const rs = await client.execute({ sql, args: params as never[] });
+          const rs = await exec({ sql, args: params as never[] });
           const row = rs.rows[0];
-          return row ? (row as unknown as { toJSON: () => Row }).toJSON() : undefined;
+          return row ? toRow(rs.columns, row) : undefined;
         }
         async all(...params: Param[]): Promise<Row[]> {
-          const rs = await client.execute({ sql, args: params as never[] });
-          return rs.rows.map((r) => (r as unknown as { toJSON: () => Row }).toJSON());
+          const rs = await exec({ sql, args: params as never[] });
+          return rs.rows.map((r: unknown) => toRow(rs.columns, r));
         }
         async run(...params: Param[]): Promise<{ changes: number }> {
-          const rs = await client.execute({ sql, args: params as never[] });
+          const rs = await exec({ sql, args: params as never[] });
           return { changes: rs.rowsAffected ?? 0 };
         }
       })();
@@ -394,18 +407,29 @@ async function initTursoDb(): Promise<TmsDb> {
       await client.executeMultiple(sql);
     }
     async transaction<T>(fn: () => Promise<T>): Promise<T> {
-      await client.execute("BEGIN");
+      // Remote libSQL: each client.execute() is its own stream, so BEGIN/COMMIT must go through
+      // an interactive transaction. Nested calls reuse the outer one.
+      if (activeTx) return fn();
+      const tx = await client.transaction("write");
+      activeTx = tx;
       try {
         const result = await fn();
-        await client.execute("COMMIT");
+        await tx.commit();
         return result;
       } catch (e) {
         try {
-          await client.execute("ROLLBACK");
+          await tx.rollback();
         } catch {
           /* ignore */
         }
         throw e;
+      } finally {
+        activeTx = null;
+        try {
+          tx.close();
+        } catch {
+          /* ignore */
+        }
       }
     }
     async flush(): Promise<void> {

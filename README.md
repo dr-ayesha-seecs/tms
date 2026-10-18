@@ -15,47 +15,26 @@ There is no OAuth and no callback URL. Login is an httpOnly cookie on whatever d
 
 ### Environment variables
 
-See `.env.example` for every name. In production set at least:
+See `.env.example` for every name. The live Netlify site uses Turso. Set:
 
 - `SESSION_SECRET` — long random string (secret). Signs the session cookie.
-- `FIREBASE_SERVICE_ACCOUNT_BASE64` — base64 of the Firebase service-account JSON (secret). This is the live database.
-
-Optional: `TMS_FIRESTORE_COLLECTION` (default `tms_db`; keep the existing name so the current data is reused), or `FIREBASE_PROJECT_ID` + `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY` instead of the base64 blob. `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are an optional alternative and are ignored when Firebase credentials are present.
+- `TURSO_DATABASE_URL` — libSQL URL for the database (secret).
+- `TURSO_AUTH_TOKEN` — token for that database (secret).
 
 Do not set `NODE_ENV` in the Netlify UI. Node 24 comes from `netlify.toml`.
 
-After the first deploy, `GET /api/health` should return `{"ok":true,"storage":"firestore",...}`. `?deep=1` also checks that Firestore is reachable. `storage: "temporary"` means Firebase is not configured; Netlify cannot keep a SQLite file, so changes would be lost.
+After deploy, `GET /api/health` should return `{"ok":true,"storage":"turso"}`.
 
-### Database (Firebase Firestore)
+Firebase credentials (`FIREBASE_SERVICE_ACCOUNT_BASE64`, or `FIREBASE_PROJECT_ID` + `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`) switch storage to the Firestore SQLite snapshot and take priority over Turso. Leave them unset on this site. `TMS_FIRESTORE_COLLECTION` only applies in that mode (default `tms_db`).
 
-Nothing is stored on the Netlify disk. The app's SQLite database (sql.js, in memory) is persisted to
-**Firebase Firestore** (`src/lib/firestore-store.ts`):
+### Database (Turso)
 
-- Collection `tms_db` (override with `TMS_FIRESTORE_COLLECTION`, must start with `tms_`):
-  `tms_db/meta` = `{ version, updatedAt, snapshotId, chunkCount, size, sha256 }`, plus chunk docs
-  `v{version}_{snapshotId}_c{n}` holding the SQLite bytes (< 1 MiB each).
-- Each save uploads new chunk docs, then publishes them by updating `meta` in a Firestore
-  transaction that checks the version (optimistic concurrency, retried by `withDbMutation`).
-  Old chunk docs are deleted after a successful publish. Reads verify size + sha256.
-- Only `tms_*` collections are used — the Firebase project may be shared with other apps.
+Nothing is stored on the Netlify disk. Production rows live in Turso and are read and written as ordinary SQL (`src/lib/db.ts`, `@libsql/client`). A local file URL (`file:…`) uses the same client.
 
-Environment variables (Netlify → Site configuration → Environment variables):
-
-| Name | Value |
-| --- | --- |
-| `FIREBASE_SERVICE_ACCOUNT_BASE64` | base64 of the whole Firebase service-account JSON (`base64 -w0 sa.json`) |
-| `SESSION_SECRET` | long random string used to sign login cookies |
-
-Alternative to the base64 variable: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`,
-`FIREBASE_PRIVATE_KEY` (the key may contain literal `\n`). Never commit credentials.
-
-Check the deployment: `GET /api/health` → `{"ok":true,"storage":"firestore",...}`
-(`?deep=1` also checks Firestore is reachable). `storage: "temporary"` means Firebase is not
-configured and changes will be lost.
-
-- **Local/dev without Firebase env:** SQLite file at `data/tms.sqlite`.
+- **Local/dev without Turso or Firebase env:** SQLite file at `data/tms.sqlite`.
+- `storage: "temporary"` means neither Turso nor Firebase is configured; a serverless disk does not keep that file.
 - Seeded users use **fixed UUIDs** so sessions stay stable across redeploys.
-- API routes use `export const runtime = 'nodejs'` (firebase-admin needs Node, not Edge).
+- API routes use `export const runtime = 'nodejs'`.
 
 Ideas are labeled **Undergraduate** (`program_type=FYP`) or **Postgraduate** (`program_type=MS_THESIS`).
 

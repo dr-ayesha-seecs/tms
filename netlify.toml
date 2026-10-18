@@ -12,10 +12,5 @@
 [build.environment]
   NODE_VERSION = "24"
 
-# Route handlers and server pages run as Netlify Functions. A cold start that
-# downloads the Firestore SQLite snapshot can exceed the 10s default.
-[functions]
-  timeout = 26
-
 [[plugins]]
   package = "@netlify/plugin-nextjs"
